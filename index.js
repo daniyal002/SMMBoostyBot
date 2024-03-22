@@ -1,58 +1,106 @@
 const { Bot } = require("grammy");
-const {
-  GoogleGenerativeAI,
-  HarmCategory,
-  HarmBlockThreshold,
-} = require("@google/generative-ai");
+const { Configuration, OpenAIApi } = require("openai");
 require("dotenv").config();
-// Токен бота
-const botToken = process.env.BOT_TOKEN;
 
-// Инициализация бота
-const bot = new Bot(botToken);
+const instruction = `Инструкция для ИИ-ассистента:
+Роль: Эксперт в области SMM и маркетинга с акцентом на Instagram.
+Основная цель: Предоставлять качественные консультации по вопросам, связанным с маркетингом в социальных сетях и маркетингом в целом.
+Обязанности:
+Обрабатывать запросы, относящиеся к SMM и маркетингу.
+Предоставлять актуальную информацию о последних тенденциях и лучших методах в Instagram.
+Общаться с пользователями в дружелюбном и профессиональном тоне.
+Предлагать пользователям возможность обратиться к Асии для получения подробной консультации по сложным или углубленным вопросам.
+Примеры запросов:
+"Как создать эффективную SMM-стратегию?"
+"Какие инструменты для анализа социальных сетей наиболее подходят сегодня?"
+"Каковы текущие тенденции в контент-маркетинге?"
+Пример ответа:
+"Чтобы создать эффективную SMM-стратегию, необходимо определить свою целевую аудиторию, установить четкие цели и KPI, выбрать подходящие платформы для публикации и анализа результатов. Регулярно отслеживайте и корректируйте свою стратегию на основе данных аналитики. Если вам нужна более подробная консультация по этому вопросу, вы всегда можете обратиться к Асии".
+Заметка:
+В конце каждого сообщения добавляйте: "Если вы хотите получить более подробную информацию по этому вопросу, рекомендую обратиться к Асие".`;
 
-// Инициализация Gemini
-const genAI = new GoogleGenerativeAI(process.env.API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+// Замените своим токеном Telegram Bot API
+const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN);
 
-// Настройки безопасности
-const safetySettings = [
-  {
-    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-  },
-];
+// Настройте API OpenAI
+const configuration = new Configuration({
+  apiKey: process.env.OPENAI_API_KEY,
+  beta: { assistants: "v1" }, // Необходимо для API Assistants
+});
+const openai = new OpenAIApi(configuration);
 
-// Обработка сообщений
+// Хранилище в памяти для состояния разговора
+const conversationStates = {};
+
+// Создайте помощника (замените своими желаемыми инструкциями и моделью)
+async function createAssistant() {
+  const assistant = await openai.beta.assistants.create({
+    name: "Math Tutor",
+    instructions: instruction,
+    tools: [{ type: "code_interpreter" }],
+    model: "gpt-3.5-turbo-preview",
+  });
+  return assistant;
+}
+
+// Обработка входящих сообщений
 bot.on("message", async (ctx) => {
-  const message = ctx.message.text;
+  const chatId = ctx.chat.id;
+  const messageText = ctx.message.text;
+
+  // Извлеките или создайте состояние разговора
+  let conversationState = conversationStates[chatId];
+  if (!conversationState) {
+    conversationState = {
+      previousMessages: [],
+      assistant: await createAssistant(), // Создайте помощника при первом взаимодействии
+    };
+    conversationStates[chatId] = conversationState;
+  }
 
   try {
-    // Генерация ответа с помощью Gemini
-    const result = await model.generateContent(message, { safetySettings });
-    const response = await result.response;
-    const text = response.text();
+    // Обновите состояние разговора текущим сообщением
+    conversationState.previousMessages.push(messageText);
 
-    // Проверка ответа на соответствие тематике
-    if (isRelevantToMarketingAndSMM(text)) {
-      await ctx.reply(text);
-    } else {
-      await ctx.reply(
-        "Я могу отвечать только на вопросы по маркетингу и SMM в Instagram."
-      );
-    }
-  } catch (err) {
-    await ctx.reply("Ошибка: " + err.message);
+    // Создайте поток
+    const thread = await openai.beta.threads.create();
+
+    // Добавьте сообщения в поток
+    await openai.beta.threads.messages.create(thread.id, {
+      role: "user",
+      content: conversationState.previousMessages.join("\n"),
+    });
+
+    // Запустите помощника в потоке
+    const run = openai.beta.threads.runs
+      .createAndStream(thread.id, {
+        assistant_id: conversationState.assistant.id,
+      })
+      .on("textCreated", (text) => ctx.reply(text.value))
+      .on("textDelta", (textDelta, snapshot) => ctx.reply(textDelta.value))
+      .on("toolCallCreated", (toolCall) =>
+        ctx.reply(`Assistant is using ${toolCall.type}`)
+      )
+      .on("toolCallDelta", (toolCallDelta, snapshot) => {
+        if (toolCallDelta.type === "code_interpreter") {
+          if (toolCallDelta.code_interpreter.input) {
+            ctx.reply(toolCallDelta.code_interpreter.input);
+          }
+          if (toolCallDelta.code_interpreter.outputs) {
+            ctx.reply("Output:");
+            toolCallDelta.code_interpreter.outputs.forEach((output) => {
+              if (output.type === "logs") {
+                ctx.reply(output.logs);
+              }
+            });
+          }
+        }
+      });
+  } catch (error) {
+    console.error(error);
+    ctx.reply("Извините, произошла ошибка.");
   }
 });
 
-// Проверка релевантности ответа
-function isRelevantToMarketingAndSMM(text) {
-  // Добавьте сюда свою логику проверки
-  // Например, можно использовать список ключевых слов
-  const keywords = ["маркетинг", "SMM", "Instagram", "таргетинг", "контент"];
-  return keywords.some((keyword) => text.includes(keyword));
-}
-
-// Запуск бота
+// Запустите бота
 bot.start();
