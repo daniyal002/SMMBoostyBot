@@ -1,8 +1,8 @@
 const { Bot } = require("grammy");
-const { Configuration, OpenAIApi } = require("openai");
+const { default: OpenAI } = require("openai");
 require("dotenv").config();
 
-const instruction = `Инструкция для ИИ-ассистента:
+const instructions = `Инструкция для ИИ-ассистента:
 Роль: Эксперт в области SMM и маркетинга с акцентом на Instagram.
 Основная цель: Предоставлять качественные консультации по вопросам, связанным с маркетингом в социальных сетях и маркетингом в целом.
 Обязанности:
@@ -19,88 +19,42 @@ const instruction = `Инструкция для ИИ-ассистента:
 Заметка:
 В конце каждого сообщения добавляйте: "Если вы хотите получить более подробную информацию по этому вопросу, рекомендую обратиться к Асие".`;
 
-// Замените своим токеном Telegram Bot API
-const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN);
-
-// Настройте API OpenAI
-const configuration = new Configuration({
-  apiKey: process.env.OPENAI_API_KEY,
-  beta: { assistants: "v1" }, // Необходимо для API Assistants
+const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN); // Замените на ваш Telegram Bot Token
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY, // Установите ваш OpenAI API Key
 });
-const openai = new OpenAIApi(configuration);
 
-// Хранилище в памяти для состояния разговора
-const conversationStates = {};
+// Функция для создания чата с ассистентом, включая инструкции
+async function chatWithAssistant(userMessage) {
+  // Инструкции и контекст для ассистента
 
-// Создайте помощника (замените своими желаемыми инструкциями и моделью)
-async function createAssistant() {
-  const assistant = await openai.beta.assistants.create({
-    name: "Math Tutor",
-    instructions: instruction,
-    tools: [{ type: "code_interpreter" }],
-    model: "gpt-3.5-turbo-preview",
+  const response = await openai.chat.completions.create({
+    model: "gpt-3.5-turbo",
+    messages: [
+      { role: "system", content: instructions }, // Системное сообщение с инструкциями
+      { role: "user", content: userMessage }, // Сообщение пользователя
+    ],
   });
-  return assistant;
+
+  return response;
 }
 
-// Обработка входящих сообщений
+// Обработчик входящих сообщений
 bot.on("message", async (ctx) => {
-  const chatId = ctx.chat.id;
-  const messageText = ctx.message.text;
-
-  // Извлеките или создайте состояние разговора
-  let conversationState = conversationStates[chatId];
-  if (!conversationState) {
-    conversationState = {
-      previousMessages: [],
-      assistant: await createAssistant(), // Создайте помощника при первом взаимодействии
-    };
-    conversationStates[chatId] = conversationState;
-  }
+  const userMessage = ctx.message.text;
 
   try {
-    // Обновите состояние разговора текущим сообщением
-    conversationState.previousMessages.push(messageText);
-
-    // Создайте поток
-    const thread = await openai.beta.threads.create();
-
-    // Добавьте сообщения в поток
-    await openai.beta.threads.messages.create(thread.id, {
-      role: "user",
-      content: conversationState.previousMessages.join("\n"),
-    });
-
-    // Запустите помощника в потоке
-    const run = openai.beta.threads.runs
-      .createAndStream(thread.id, {
-        assistant_id: conversationState.assistant.id,
-      })
-      .on("textCreated", (text) => ctx.reply(text.value))
-      .on("textDelta", (textDelta, snapshot) => ctx.reply(textDelta.value))
-      .on("toolCallCreated", (toolCall) =>
-        ctx.reply(`Assistant is using ${toolCall.type}`)
-      )
-      .on("toolCallDelta", (toolCallDelta, snapshot) => {
-        if (toolCallDelta.type === "code_interpreter") {
-          if (toolCallDelta.code_interpreter.input) {
-            ctx.reply(toolCallDelta.code_interpreter.input);
-          }
-          if (toolCallDelta.code_interpreter.outputs) {
-            ctx.reply("Output:");
-            toolCallDelta.code_interpreter.outputs.forEach((output) => {
-              if (output.type === "logs") {
-                ctx.reply(output.logs);
-              }
-            });
-          }
-        }
-      });
+    const response = await chatWithAssistant(userMessage);
+    // Извлечение и отправка ответа
+    const reply = response.data.choices[0].message.content.trim();
+    await ctx.reply(reply);
   } catch (error) {
-    console.error(error);
-    ctx.reply("Извините, произошла ошибка.");
+    console.error("Ошибка при создании завершения чата:", error);
+    await ctx.reply(
+      "Прошу прощения, произошла ошибка при обработке вашего запроса."
+    );
   }
 });
 
-// Запустите бота
+// Запуск бота
 bot.start();
