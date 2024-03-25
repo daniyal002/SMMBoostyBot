@@ -24,6 +24,10 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY, // Установите ваш OpenAI API Key
 });
 
+bot.api.setMyCommands([
+  { command: "start", description: "Начать пользоваться ботом" },
+]);
+
 // Функция для создания чата с ассистентом, включая инструкции
 async function chatWithAssistant(userMessage) {
   // Инструкции и контекст для ассистента
